@@ -73,3 +73,37 @@ bind_cols(., test_data) %>%
   mutate(datetime=as.character(format(datetime)))
 ## Write out the file
 vroom_write(x=kaggle_submission, file="./LinearPreds.csv", delim=",")
+
+
+# Penalized Regression ----------------------------------------------------
+
+bike_penalized_recipe <- recipe(count ~ ., data = train_data) %>%
+  step_mutate(season = as.factor(season)) %>%  # make season factor
+  step_time(datetime, features = c("hour")) %>% # extract hour
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>% # recode weather
+  step_date(datetime, features = "dow") %>% # extract day of week
+  step_rm(datetime) %>% # remove original datetime
+  step_dummy(all_nominal_predictors()) %>% #make dummy variables
+  step_normalize(all_numeric_predictors()) # Make mean 0, sd=1
+
+## Penalized regression model
+preg_model <- linear_reg(penalty= 10, mixture=0) %>% #Set model and tuning
+  set_engine("glmnet") # Function to fit in R
+preg_wf <- workflow() %>%
+  add_recipe(bike_penalized_recipe) %>%
+  add_model(preg_model) %>%
+  fit(data= train_data)
+
+pred_5<-predict(preg_wf, new_data=test_data)%>%
+  mutate(.pred = exp(.pred))
+
+kaggle_submission <- pred_5 %>%
+  bind_cols(., test_data) %>% 
+  select(datetime, .pred) %>%
+  rename(count=.pred) %>%
+  mutate(count=pmax(0, count)) %>%
+  mutate(datetime=as.character(format(datetime)))
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./Penalize_Pred5.csv", delim=",")
+x``
