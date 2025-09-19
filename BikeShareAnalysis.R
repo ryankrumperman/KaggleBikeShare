@@ -4,6 +4,7 @@
 library(tidyverse)
 library(tidymodels)
 library(vroom)
+install.packages("rpart")
 
 train_data <- vroom("C:/Users/rkrum/Documents/Stat 348/BikeShare/train.csv")
 test_data  <- vroom("C:/Users/rkrum/Documents/Stat 348/BikeShare/test.csv")
@@ -165,3 +166,54 @@ kaggle_submission <- cv_guesses %>%
 
 ## Write out the file
 vroom_write(x=kaggle_submission, file="./cv_preds.csv", delim=",")
+
+
+# Regression Trees --------------------------------------------------------
+
+
+
+my_mod <- decision_tree(tree_depth = tune(),
+                        cost_complexity = tune(),
+                        min_n=tune()) %>% #Type of model
+  set_engine("rpart") %>% # What R function to use
+  set_mode("regression")
+
+## Create a workflow with model & recipe
+tree_workflow <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(my_mod)
+## Set up grid of tuning values
+grid_of_tuning_params <- grid_regular(tree_depth(),
+                                      cost_complexity(),
+                                      min_n(),
+                                      levels = 3)
+## Set up K-fold CV
+folds <- vfold_cv(train_data, v = 10, repeats=1)
+CV_results <- tree_workflow %>%
+  tune_grid(resamples=folds,
+            grid=grid_of_tuning_params,
+            metrics=metric_set(rmse, mae))
+bestTune <- CV_results %>%
+  select_best(metric ="rmse")
+
+final_wf <-tree_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=train_data)
+
+## Predict7
+cv_guesses<- final_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(.pred = exp(.pred))
+
+kaggle_submission <- cv_guesses %>%
+  bind_cols(., test_data) %>% 
+  select(datetime, .pred) %>%
+  rename(count=.pred) %>%
+  mutate(count=pmax(0, count)) %>%
+  mutate(datetime=as.character(format(datetime)))
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./tree_preds.csv", delim=",")
+
+## Find best tuning parameters
+## Finalize workflow and predict
