@@ -5,6 +5,9 @@ library(tidyverse)
 library(tidymodels)
 library(vroom)
 install.packages("rpart")
+library(rpart)
+install.packages("ranger")
+library(ranger)
 
 train_data <- vroom("C:/Users/rkrum/Documents/Stat 348/BikeShare/train.csv")
 test_data  <- vroom("C:/Users/rkrum/Documents/Stat 348/BikeShare/test.csv")
@@ -217,3 +220,61 @@ vroom_write(x=kaggle_submission, file="./tree_preds.csv", delim=",")
 
 ## Find best tuning parameters
 ## Finalize workflow and predict
+
+# Random Forests ----------------------------------------------------------
+my_mod <- rand_forest(
+  mtry = tune(),
+  min_n = tune(),
+  trees = 500
+) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+# Workflow
+tree_workflow <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(my_mod)
+
+# Grid for tuning only tunable parameters
+grid_of_tuning_params <- expand_grid(
+  mtry = c(1,3,7,10),
+  min_n = c(1,5,10)
+)
+
+# K-fold CV
+folds <- vfold_cv(train_data, v = 10, repeats = 1)
+
+# Tune
+CV_results <- tree_workflow %>%
+  tune_grid(
+    resamples = folds,
+    grid = grid_of_tuning_params,
+    metrics = metric_set(rmse, mae)
+  )
+
+# Select best tuning
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Final workflow
+final_wf <- tree_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train_data)
+
+# Predictions
+cv_guesses <- final_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(.pred = exp(.pred))  # only do this if your model was trained on log(count)
+
+# Prepare submission
+kaggle_submission <- cv_guesses %>%
+  bind_cols(test_data) %>%
+  select(datetime, .pred) %>%
+  rename(count = .pred) %>%
+  mutate(
+    count = pmax(0, count),
+    datetime = as.character(format(datetime))
+  )
+
+# Write out the file
+vroom_write(x = kaggle_submission, file = "./forest_preds.csv", delim = ",")
