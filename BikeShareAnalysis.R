@@ -25,7 +25,8 @@ bike_recipe <- recipe(count ~ ., data = train_data) %>%
   step_time(datetime, features = c("hour")) %>% # extract hour
   step_mutate(weather = ifelse(weather == 4, 3, weather)) %>% # recode weather
   step_date(datetime, features = "dow") %>% # extract day of week
-  step_rm(datetime) # remove original datetime
+  step_rm(datetime) %>%
+  step_normalize(all_numeric_predictors())# remove original datetime
 
 # Define a model
 lin_model <- linear_reg() %>%
@@ -278,3 +279,64 @@ kaggle_submission <- cv_guesses %>%
 
 # Write out the file
 vroom_write(x = kaggle_submission, file = "./forest_preds.csv", delim = ",")
+
+# Boosting ----------------------------------------------------------------
+install.packages("bonsai")
+install.packages("lightgbm")
+install.packages("dbarts")
+library(dbarts)
+library(bonsai)
+library(lightgbm)
+
+
+bart_model <- bart(trees=tune()) %>% # BART figures out depth and learn_rate9
+  set_engine("dbarts") %>% # might need to install10
+  set_mode("regression")
+
+# Workflow
+bart_workflow <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(bart_model)
+
+# Grid for tuning only tunable parameters
+grid_of_tuning_params <- expand_grid( trees = c(1,5,10,30,50,100,250)
+)
+
+# K-fold CV
+folds <- vfold_cv(train_data, v = 10, repeats = 1)
+
+# Tune
+CV_results <- bart_workflow %>%
+  tune_grid(
+    resamples = folds,
+    grid = grid_of_tuning_params,
+    metrics = metric_set(rmse, mae)
+  )
+
+# Select best tuning
+bestTune <- CV_results %>%
+  select_best(metric = "rmse")
+
+# Final workflow
+final_wf <- bart_workflow %>%
+  finalize_workflow(bestTune) %>%
+  fit(data = train_data)
+
+# Predictions
+cv_guesses <- final_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(.pred = exp(.pred))  # only do this if your model was trained on log(count)
+
+# Prepare submission
+kaggle_submission <- cv_guesses %>%
+  bind_cols(test_data) %>%
+  select(datetime, .pred) %>%
+  rename(count = .pred) %>%
+  mutate(
+    count = pmax(0, count),
+    datetime = as.character(format(datetime))
+  )
+
+# Write out the file
+vroom_write(x = kaggle_submission, file = "./BARTs_preds.csv", delim = ",")
+
