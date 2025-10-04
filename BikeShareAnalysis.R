@@ -8,6 +8,8 @@ install.packages("rpart")
 library(rpart)
 install.packages("ranger")
 library(ranger)
+install.packages("agua")
+library(agua)
 
 train_data <- vroom("C:/Users/rkrum/Documents/Stat 348/BikeShare/train.csv")
 test_data  <- vroom("C:/Users/rkrum/Documents/Stat 348/BikeShare/test.csv")
@@ -19,14 +21,28 @@ train_data <- train_data %>%
 
 # Recipe Linear Model ------------------------------------------------------------------
 
-
 bike_recipe <- recipe(count ~ ., data = train_data) %>%
-  step_mutate(season = as.factor(season)) %>%  # make season factor
-  step_time(datetime, features = c("hour")) %>% # extract hour
-  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>% # recode weather
-  step_date(datetime, features = "dow") %>% # extract day of week
+  step_mutate(season = as.factor(season)) %>%
+  step_mutate(weather = as.factor(ifelse(weather == 4, 3, weather))) %>%
+  
+  # extract time features
+  step_time(datetime, features = c("hour")) %>%
+  step_date(datetime, features = c("dow", "month", "year")) %>%
+  
+  # coerce to factors (use the actual column names created)
+  step_mutate_at(c("datetime_hour", "datetime_dow", "datetime_month", "datetime_year"),
+                 fn = as.factor) %>%
+  
+  # interaction between hour and dow
+  step_interact(~ datetime_hour:datetime_dow) %>%
+  
   step_rm(datetime) %>%
-  step_normalize(all_numeric_predictors())# remove original datetime
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+
+
+
 
 # Define a model
 lin_model <- linear_reg() %>%
@@ -56,7 +72,11 @@ vroom_write(x=kaggle_submission, file="./LinearPredsWrangled.csv", delim=",")
 
 prepped_recipe <- prep(bike_recipe) # Sets up the preprocessing using myDataSet13
 baked_train_data<-bake(prepped_recipe, new_data=train_data)
+baked_test_data<- bake(prepped_recipe, new_data = test_data)
 
+
+write.csv(baked_test_data, "baked_test.csv")
+write.csv(baked_train_data, "baked_train.csv")
 
 # Basic Linear Regression Model -------------------------------------------
 
@@ -299,11 +319,11 @@ bart_workflow <- workflow() %>%
   add_model(bart_model)
 
 # Grid for tuning only tunable parameters
-grid_of_tuning_params <- expand_grid( trees = c(1,5,10,30,50,100,250)
+grid_of_tuning_params <- expand_grid( trees = c(50,100,250)
 )
 
 # K-fold CV
-folds <- vfold_cv(train_data, v = 10, repeats = 1)
+folds <- vfold_cv(train_data, v = 5, repeats = 1)
 
 # Tune
 CV_results <- bart_workflow %>%
@@ -338,5 +358,52 @@ kaggle_submission <- cv_guesses %>%
   )
 
 # Write out the file
-vroom_write(x = kaggle_submission, file = "./BARTs_preds.csv", delim = ",")
+vroom_write(x = kaggle_submission, file = "./BART2_preds.csv", delim = ",")
 
+
+
+# Stacking ----------------------------------------------------------------
+
+## Initialize an h2o session
+h2o::h2o.init()
+
+auto_model <- auto_ml() %>%
+set_engine("h2o", max_runtime_secs=180, max_models = 5) %>%
+set_mode("regression")
+
+## Combine into Workflow
+automl_wf <- workflow() %>%
+add_recipe(bike_recipe) %>%
+add_model(auto_model) %>%
+fit(data=train_data)
+
+cv_guesses<- automl_wf %>%
+  predict(new_data = test_data) %>%
+  mutate(.pred = exp(.pred))
+
+kaggle_submission <- cv_guesses %>%
+  bind_cols(., test_data) %>% 
+  select(datetime, .pred) %>%
+  rename(count=.pred) %>%
+  mutate(count=pmax(0, count)) %>%
+  mutate(datetime=as.character(format(datetime)))
+
+
+
+
+
+# datarobot ---------------------------------------------------------------
+
+data_robot<-vroom("C:\\Users\\rkrum\\Downloads\\result-68dae154984c1666ce94922c.csv")
+
+data<-data.frame(count = data_robot$count_PREDICTION, datetime=test_data$datetime)
+
+data<- data %>%
+  mutate(count = exp(count))
+
+
+kaggle_submission <- data %>% 
+  select(datetime, count) %>%
+  mutate(count=pmax(0, count)) %>%
+  mutate(datetime=as.character(format(datetime)))
+vroom_write(x=kaggle_submission, file="./data_preds.csv", delim=",")
